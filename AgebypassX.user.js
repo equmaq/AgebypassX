@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AgebypassX
 // @namespace    https://github.com/Saganaki22/AgebypassX
-// @version      2.4.0
+// @version      2.4.1
 // @description  Age/sensitive-media bypass for X.com via initial-state and JSON feature-switch patching (Alt+. toggles the dot indicator; click it for diagnostics)
 // @author       Saganaki22
 // @license      MIT
@@ -11,18 +11,15 @@
 // @grant        none
 // @homepageURL  https://github.com/Saganaki22/AgebypassX
 // @supportURL   https://github.com/Saganaki22/AgebypassX/issues
-// NOTE: update these URLs if you republish under a new slug
-// @updateURL    https://greasyfork.org/scripts/547244-agebypassx-tampermonkey-edition/code/AgebypassX.user.js
-// @downloadURL  https://greasyfork.org/scripts/547244-agebypassx-tampermonkey-edition/code/AgebypassX.user.js
 // @noframes
+// @downloadURL https://update.greasyfork.org/scripts/547244/AgebypassX.user.js
+// @updateURL https://update.greasyfork.org/scripts/547244/AgebypassX.meta.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // GM_info stays available under @grant none in Tampermonkey and
-    // Violentmonkey; the typeof guard covers managers where it isn't.
-    let VERSION = '2.4.0';
+    let VERSION = '2.4.1';
     try {
         if (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) {
             VERSION = GM_info.script.version;
@@ -43,26 +40,17 @@
 
     const flagNames = Object.keys(flags);
 
-    // Spoofed birthdate (any 18+ date is functionally equivalent)
+    // Spoofed birthdate
     const BIRTHDATE = { year: 1990, month: 1, day: 1 };
 
-    // Structural pre-scan depth for Response.json payloads. Deliberately
-    // generous: a false negative here silently skips patching, while a
-    // false positive only costs one walk.
     const JSON_SCAN_DEPTH = 5;
+    const DEFAULT_WALK_DEPTH = 30;
 
     const MAX_ERROR_LOG = 20;
     const MAX_UNKNOWN_LOG = 50;
 
     // -----------------------------------------------------------------------
-    // Status model — separates current health (recoverable) from
-    // historical error count (cumulative). markOk() is ONLY called after
-    // a gated patch ran and completed without internal patch errors;
-    // unrelated hook invocations never restore the indicator.
-    //
-    // The dot reflects hook/traversal health only. Individual target-flag
-    // writes that throw or don't stick are recorded in stats.writeFailed
-    // (diagnostics), not as traversal failures.
+    // Status model
     // -----------------------------------------------------------------------
     const status = { ok: true, errors: 0 };
 
@@ -74,13 +62,12 @@
 
     const stats = {
         gateHits:    { state: 0, assign: 0, parse: 0, json: 0 },
-        found:       zeroFlagCounts(),  // per flag: times encountered (pre-seeded so zeros are visible)
-        changed:     zeroFlagCounts(),  // per flag: value actually moved AND read back correct
-        writeFailed: zeroFlagCounts(),  // per flag: couldn't be processed/written (throw on access,
-                                        // write threw, or read-back mismatch)
+        found:       zeroFlagCounts(),
+        changed:     zeroFlagCounts(),
+        writeFailed: zeroFlagCounts(),
         birthdate:   { seen: 0, changed: 0, failed: 0 },
-        unknown:     [],                // candidate related keys — NOT verified flags
-        errors:      []                 // ring buffer of recent {where, message}
+        unknown:     [],
+        errors:      []
     };
 
     let lastErrLog = 0;
@@ -122,6 +109,8 @@
         return typeof text === 'string' && GATE_RE.test(text);
     }
 
+    const hasOwn = Object.prototype.hasOwnProperty;
+
     function objectMayContainFlags(obj, depth) {
         if (!obj || typeof obj !== 'object' || depth < 0) return false;
 
@@ -129,7 +118,8 @@
         try { keys = Object.keys(obj); } catch (e) { return false; }
 
         for (let i = 0; i < keys.length; i++) {
-            if (keys[i] in flags || keys[i] === 'birthdate' || keys[i] === 'featureSwitch') {
+            const k = keys[i];
+            if (hasOwn.call(flags, k) || k === 'birthdate' || k === 'featureSwitch') {
                 return true;
             }
         }
@@ -182,18 +172,6 @@
         console.log('flag process/write failures:', stats.writeFailed);
         console.log('birthdate:', stats.birthdate);
 
-        // How to read the counters above, per flag:
-        //   found > 0, changed > 0, writeFailed = 0
-        //       -> working normally
-        //   found > 0, changed = 0, writeFailed = 0
-        //       -> already had the desired value
-        //   found > 0, writeFailed > 0
-        //       -> flag exposed but couldn't be fully processed/written
-        //          (covers throws on read, failed writes, read-back
-        //          mismatches)
-        //   found = 0
-        //       -> not encountered; possible rename/removal/experiment/
-        //          region difference (warning signal, not proof)
         console.log('reading guide:\n' +
             '  found>0 changed>0 writeFailed=0 : working normally\n' +
             '  found>0 changed=0 writeFailed=0 : already at desired value\n' +
@@ -210,44 +188,54 @@
     }
 
     function mountIndicator() {
-        const root = document.documentElement;
-        if (!root) { setTimeout(mountIndicator, 10); return; }
+        const target = document.head || document.body || document.documentElement;
+        if (!target) {
+            setTimeout(mountIndicator, 10);
+            return;
+        }
 
         if (!document.getElementById('nox-indicator-style')) {
             const style = document.createElement('style');
             style.id = 'nox-indicator-style';
             style.textContent = CSS;
-            root.appendChild(style);
+            target.appendChild(style);
         }
 
+        const bodyTarget = document.body || document.documentElement;
         let dot = document.getElementById('nox-indicator');
-        if (!dot) {
+        if (!dot && bodyTarget) {
             dot = document.createElement('div');
             dot.id = 'nox-indicator';
             dot.addEventListener('click', onDotClick);
-            root.appendChild(dot);
+            bodyTarget.appendChild(dot);
         }
 
-        dot.dataset.state = status.ok ? 'ok' : 'err';
-        dot.dataset.hidden = indicatorHidden ? 'true' : 'false';
-        dot.title = 'Nox: ' + (status.ok ? 'ACTIVE' : 'ERROR') + ' — click for diagnostics in console';
+        if (dot) {
+            dot.dataset.state = status.ok ? 'ok' : 'err';
+            dot.dataset.hidden = indicatorHidden ? 'true' : 'false';
+            dot.title = 'Nox: ' + (status.ok ? 'ACTIVE' : 'ERROR') + ' — click for diagnostics in console';
+        }
     }
 
-    mountIndicator();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', mountIndicator);
+    } else {
+        mountIndicator();
+    }
 
     (function watchIndicator() {
         const root = document.documentElement;
         if (!root) { setTimeout(watchIndicator, 10); return; }
 
         new MutationObserver(function() {
-            if (!document.getElementById('nox-indicator')) {
+            if (!document.getElementById('nox-indicator') && (document.body || document.documentElement)) {
                 mountIndicator();
             }
         }).observe(root, { childList: true });
     })();
 
     // -----------------------------------------------------------------------
-    // Hotkey: Alt+. toggles the indicator (persisted)
+    // Hotkey: Alt+.
     // -----------------------------------------------------------------------
     document.addEventListener('keydown', function(e) {
         if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'Period') {
@@ -271,26 +259,24 @@
         return true;
     }
 
-    // Boolean coercion for feature flags: number-typed switches are 1/0.
-    // Do NOT use for non-boolean desired values (birthdate etc.).
+    function isPlainObject(val) {
+        if (!val || typeof val !== 'object') return false;
+        const proto = Object.getPrototypeOf(val);
+        return proto === null || proto === Object.prototype;
+    }
+
     function coerceLike(sample, desired) {
         if (typeof sample === 'string') return String(desired);
         if (typeof sample === 'number') return desired ? 1 : 0;
         return desired;
     }
 
-    // General scalar coercion for non-boolean desired values: preserves
-    // string/number typing of the stored value without truthiness
-    // collapsing (coerceLike(1995, 1990) would return 1!).
     function coerceScalarLike(sample, desired) {
         if (typeof sample === 'string') return String(desired);
         if (typeof sample === 'number') return Number(desired);
         return desired;
     }
 
-    // Verified write: assign, then read back. Catches both throwing
-    // assignments (via the caller's catch) and setters that accept the
-    // write without retaining the value (read-back mismatch).
     function verifiedWrite(obj, key, next) {
         obj[key] = next;
         return obj[key] === next;
@@ -329,21 +315,11 @@
                     }
                 }
             } catch (e) {
-                // Covers throws anywhere in the per-flag block, including
-                // reads — hence "process/write failures".
                 count(stats.writeFailed, key);
             }
         }
     }
 
-    // Heuristic scanner: reports keys that LOOK related (age/birth/sensitive/
-    // blur/restrict/...) encountered during walks.
-    //
-    // SCOPE LIMITATION: this only runs inside walk(), and walk() is only
-    // entered after a gate matched a KNOWN term. A fully renamed flag
-    // structure may never reach this scanner. It discovers additional
-    // flags adjacent to known structures — it is NOT a complete rename
-    // detector.
     const HINT_RE = /(^|[^a-z])(age|birth|minor|sensitive|blur|restrict|verif|interstitial)([^a-z]|$)/i;
     const seenHints = new Set();
 
@@ -365,12 +341,8 @@
         }
     }
 
-    // Returns true only if this subtree (and all descendants) completed
-    // without an internal traversal error. Target-flag writes that throw
-    // or fail read-back are recorded in stats.writeFailed (diagnostics)
-    // but do NOT fail the traversal — the dot reflects hook/traversal
-    // health, diagnostics carry per-flag write outcomes.
-    function walk(obj, visited) {
+    function walk(obj, visited, maxDepth = DEFAULT_WALK_DEPTH, currentDepth = 0) {
+        if (currentDepth > maxDepth) return true;
         if (!isSafeObject(obj, visited)) return true;
 
         visited.add(obj);
@@ -380,7 +352,6 @@
             applyFlags(obj);
             scanForRelatedKeys(obj);
 
-            // GraphQL feature-array entries: {feature: "name", enabled: <bool>}
             try {
                 const fname = obj.feature;
                 if (typeof fname === 'string' && fname in flags && 'enabled' in obj) {
@@ -400,9 +371,6 @@
                 }
             } catch (e) {}
 
-            // Birthdate spoofing — type-preserving, verified writes; same
-            // machinery as the flags. Missing fields are filled with
-            // plain numbers; existing string/number types are preserved.
             try {
                 if (obj.birthdate && typeof obj.birthdate === 'object') {
                     stats.birthdate.seen++;
@@ -440,7 +408,7 @@
                 try { child = obj[k]; } catch (e) { continue; }
 
                 if (isSafeObject(child, visited)) {
-                    if (!walk(child, visited)) ok = false;
+                    if (!walk(child, visited, maxDepth, currentDepth + 1)) ok = false;
                 }
             }
         } catch (e) {
@@ -451,9 +419,8 @@
         return ok;
     }
 
-    // True = traversal completed with no internal patch error.
-    function patch(root) {
-        return walk(root, new WeakSet());
+    function patch(root, maxDepth = DEFAULT_WALK_DEPTH) {
+        return walk(root, new WeakSet(), maxDepth, 0);
     }
 
     function spoofAs(nativeFn, fn, name) {
@@ -462,6 +429,11 @@
         } catch (e) {}
         try {
             Object.defineProperty(fn, 'name', { value: name, configurable: true });
+        } catch (e) {}
+        try {
+            fn.toString = function() {
+                return nativeFn.toString();
+            };
         } catch (e) {}
     }
 
@@ -474,14 +446,6 @@
         let stateVal;
         let canInstallStateHook = true;
 
-        // If injection ran slightly late (after X's first assignment),
-        // capture the existing value and patch it BEFORE installing the
-        // accessor — otherwise defineProperty() would replace the
-        // populated property with an accessor backed by undefined.
-        //
-        // If the capture itself fails (e.g. an existing getter throws),
-        // do NOT install our accessor: replacing the property then would
-        // destroy the live state. Leave it alone; Hooks 2–4 still run.
         try {
             if (Object.prototype.hasOwnProperty.call(window, '__INITIAL_STATE__')) {
                 stateVal = window.__INITIAL_STATE__;
@@ -504,9 +468,6 @@
                 get: function() { return stateVal; },
 
                 set: function(newValue) {
-                    // Only treat object assignments as patch attempts, so a
-                    // primitive/undefined assignment can't produce a vacuous
-                    // patch() -> true -> markOk() after an earlier error.
                     if (newValue && typeof newValue === 'object') {
                         stats.gateHits.state++;
                         try {
@@ -524,14 +485,14 @@
     }
 
     // -----------------------------------------------------------------------
-    // Hook 2: Object.assign — only patch state-like objects
+    // Hook 2: Object.assign
     // -----------------------------------------------------------------------
     const originalAssign = Object.assign;
 
     function noxAssign(target) {
         const result = originalAssign.apply(this, arguments);
         try {
-            if (target && typeof target === 'object') {
+            if (isPlainObject(target)) {
                 if (target.featureSwitch || target.entities || target.users) {
                     stats.gateHits.assign++;
                     if (patch(target)) markOk();
@@ -547,7 +508,7 @@
     Object.assign = noxAssign;
 
     // -----------------------------------------------------------------------
-    // Hook 3: JSON.parse — gated on exact flag names in the raw text
+    // Hook 3: JSON.parse
     // -----------------------------------------------------------------------
     const originalParse = JSON.parse;
 
@@ -568,9 +529,7 @@
     JSON.parse = noxParse;
 
     // -----------------------------------------------------------------------
-    // Hook 4: Response.json — fetch responses parse internally and
-    // bypass the JSON.parse hook. (response.text() → JSON.parse and
-    // WebSocket frames → JSON.parse are already covered by Hook 3.)
+    // Hook 4: Response.json
     // -----------------------------------------------------------------------
     try {
         if (window.Response && Response.prototype && typeof Response.prototype.json === 'function') {
