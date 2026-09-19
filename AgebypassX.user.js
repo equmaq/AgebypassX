@@ -11,10 +11,10 @@
 // @grant        none
 // @homepageURL  https://github.com/Saganaki22/AgebypassX
 // @supportURL   https://github.com/Saganaki22/AgebypassX/issues
-// @noframes
 // NOTE: update these URLs if you republish under a new slug
 // @updateURL    https://greasyfork.org/scripts/547244-agebypassx-tampermonkey-edition/code/AgebypassX.user.js
 // @downloadURL  https://greasyfork.org/scripts/547244-agebypassx-tampermonkey-edition/code/AgebypassX.user.js
+// @noframes
 // ==/UserScript==
 
 (function() {
@@ -43,7 +43,7 @@
 
     const flagNames = Object.keys(flags);
 
-    // Spoofed birthdate(any 18+ date is functionally equivalent)
+    // Spoofed birthdate (any 18+ date is functionally equivalent)
     const BIRTHDATE = { year: 1990, month: 1, day: 1 };
 
     // Structural pre-scan depth for Response.json payloads. Deliberately
@@ -335,8 +335,6 @@
                             if (verifiedWrite(val, 'value', next)) {
                                 count(stats.changed, key);
                             } else {
-                                // Covers throws anywhere in the per-flag block, including
-                                // reads — hence "process/write failures".
                                 count(stats.writeFailed, key);
                             }
                         }
@@ -352,6 +350,8 @@
                     }
                 }
             } catch (e) {
+                // Covers throws anywhere in the per-flag block, including
+                // reads — hence "process/write failures".
                 count(stats.writeFailed, key);
             }
         }
